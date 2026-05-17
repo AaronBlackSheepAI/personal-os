@@ -196,7 +196,14 @@ async function processUpdate(chatId, inputText) {
   const result = await callClaudeJSON(
     `Personal OS aspects:\n${list}\n\nUser sent: "${inputText}"\n\n` +
     `Determine which aspect this belongs to and what kind of entry it is.\n\n` +
-    `Return JSON:\n{"aspect_id":"uuid","aspect_name":"name","intent":"update|idea|job_done|reflection|answer","reply":"2 sentence honest confirmation, no flattery","diary_entry":"one line summary"}`,
+    `For the Compass aspect specifically, also identify the section: "beliefs" (something they hold to be true), "purpose" (why they are here, deep direction), "mission" (active expression of purpose right now), or "standpoints" (commitments and decisions they have taken as principles).\n\n` +
+    `Intent guide:\n` +
+    `- "reflection" for inner aspects (Spiritual, Reflections & Questions, Compass) where they are writing thoughts, beliefs, or self-observation\n` +
+    `- "idea" for sparks, possibilities, things to explore\n` +
+    `- "job_done" only when they explicitly report completing a task\n` +
+    `- "update" for status updates on doing aspects\n` +
+    `- "answer" if they appear to be answering a recent question\n\n` +
+    `Return JSON:\n{"aspect_id":"uuid","aspect_name":"name","intent":"update|idea|job_done|reflection|answer","compass_section":"beliefs|purpose|mission|standpoints|null","reply":"2 sentence honest confirmation, no flattery","diary_entry":"one line summary"}`,
     1000
   );
   
@@ -228,24 +235,45 @@ async function processUpdate(chatId, inputText) {
     });
   }
   
-  // Log diary
+  // Log diary (always)
   await supabasePost('/rest/v1/diary_log', {
     aspect_id: aspect.id, entry: result.diary_entry,
     entry_type: result.intent, source: 'telegram'
   });
   
-  // Type-specific saves
-  if (result.intent === 'idea') {
+  // Smart routing for inner aspects
+  let routedTo = '';
+  
+  if (aspect.name === 'Compass' && result.compass_section && result.compass_section !== 'null') {
+    // Compass gets the section
+    await supabasePost('/rest/v1/reflections', {
+      aspect_id: aspect.id, content: inputText, section: result.compass_section
+    });
+    routedTo = ` → ${result.compass_section}`;
+  } else if (aspect.aspect_type === 'inner') {
+    // Other inner aspects get reflection
+    await supabasePost('/rest/v1/reflections', {
+      aspect_id: aspect.id, content: inputText
+    });
+    routedTo = ' → reflections';
+  } else if (result.intent === 'idea') {
     await supabasePost('/rest/v1/ideas', { aspect_id: aspect.id, content: inputText, source: 'telegram' });
+    routedTo = ' → ideas';
   } else if (result.intent === 'job_done') {
     await supabasePost('/rest/v1/jobs', {
       aspect_id: aspect.id, title: inputText, status: 'completed', completed_at: new Date().toISOString()
     });
+    routedTo = ' → done';
   } else if (result.intent === 'reflection') {
     await supabasePost('/rest/v1/reflections', { aspect_id: aspect.id, content: inputText });
+    routedTo = ' → reflections';
+  } else {
+    // Default for doing aspects: save as idea so it's not lost
+    await supabasePost('/rest/v1/ideas', { aspect_id: aspect.id, content: inputText, source: 'telegram' });
+    routedTo = ' → ideas';
   }
   
-  await sendTelegram(chatId, `✓ *${aspect.name}*\n\n${result.reply}`);
+  await sendTelegram(chatId, `✓ *${aspect.name}*${routedTo}\n\n${result.reply}`);
 }
 
 // ── Main handler ──

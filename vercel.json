@@ -1,0 +1,7 @@
+{
+  "crons": [
+    { "path": "/api/cron/daily-question", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/weekly-map", "schedule": "0 8 * * 0" },
+    { "path": "/api/cron/decision-revisits", "schedule": "0 9 * * *" }
+  ]
+}

@@ -268,16 +268,27 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
     try {
-      await sendTelegram(chatId, '🎙 _Transcribing..._');
+      await sendTelegram(chatId, '🎙 Transcribing...');
       const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+      
+      // Get file path from Telegram
       const fileRes = await fetch('https://api.telegram.org/bot' + TOKEN + '/getFile?file_id=' + message.voice.file_id);
       const fileData = await fileRes.json();
-      const fileUrl = 'https://api.telegram.org/file/bot' + TOKEN + '/' + fileData.result.file_path;
-      const audioRes = await fetch(fileUrl);
-      const audioBuffer = await audioRes.arrayBuffer();
       
+      if (!fileData.ok) {
+        await sendTelegram(chatId, 'Telegram file fetch failed: ' + JSON.stringify(fileData).slice(0, 200));
+        return res.status(200).json({ ok: true });
+      }
+      
+      const fileUrl = 'https://api.telegram.org/file/bot' + TOKEN + '/' + fileData.result.file_path;
+      
+      // Download the audio file
+      const audioRes = await fetch(fileUrl);
+      const audioBlob = await audioRes.blob();
+      
+      // Build multipart form data manually for Whisper
       const formData = new FormData();
-      formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg');
+      formData.append('file', audioBlob, 'voice.ogg');
       formData.append('model', 'whisper-1');
       
       const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -285,20 +296,33 @@ export default async function handler(req, res) {
         headers: { 'Authorization': 'Bearer ' + OPENAI_KEY },
         body: formData
       });
-      const whisperData = await whisperRes.json();
-      const transcribed = whisperData.text;
       
-      if (!transcribed) {
-        await sendTelegram(chatId, 'Could not transcribe. Try again or send as text.');
+      const whisperText = await whisperRes.text();
+      let whisperData;
+      try {
+        whisperData = JSON.parse(whisperText);
+      } catch(e) {
+        await sendTelegram(chatId, 'Whisper response not JSON: ' + whisperText.slice(0, 300));
         return res.status(200).json({ ok: true });
       }
       
-      await sendTelegram(chatId, `_"${transcribed}"_\n\nProcessing...`);
+      if (whisperData.error) {
+        await sendTelegram(chatId, 'Whisper error: ' + whisperData.error.message);
+        return res.status(200).json({ ok: true });
+      }
+      
+      const transcribed = whisperData.text;
+      if (!transcribed) {
+        await sendTelegram(chatId, 'No transcription returned. Response: ' + JSON.stringify(whisperData).slice(0, 200));
+        return res.status(200).json({ ok: true });
+      }
+      
+      await sendTelegram(chatId, `"${transcribed}"\n\nProcessing...`);
       
       // Check if we're in /decide flow
-      const state = await getConvState(chatId);
-      if (state && state.flow_type === 'decide') {
-        await handleDecideFlow(chatId, transcribed, state);
+      const voiceState = await getConvState(chatId);
+      if (voiceState && voiceState.flow_type === 'decide') {
+        await handleDecideFlow(chatId, transcribed, voiceState);
       } else {
         await processUpdate(chatId, transcribed);
       }

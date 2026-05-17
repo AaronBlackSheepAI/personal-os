@@ -260,6 +260,55 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true });
   }
   
+  // Handle voice notes — transcribe with Whisper, then process as text
+  if (message.voice) {
+    const OPENAI_KEY = process.env.OPENAI_API_KEY;
+    if (!OPENAI_KEY) {
+      await sendTelegram(chatId, 'Voice notes need OpenAI API key. Add OPENAI_API_KEY to Vercel.');
+      return res.status(200).json({ ok: true });
+    }
+    try {
+      await sendTelegram(chatId, '🎙 _Transcribing..._');
+      const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+      const fileRes = await fetch('https://api.telegram.org/bot' + TOKEN + '/getFile?file_id=' + message.voice.file_id);
+      const fileData = await fileRes.json();
+      const fileUrl = 'https://api.telegram.org/file/bot' + TOKEN + '/' + fileData.result.file_path;
+      const audioRes = await fetch(fileUrl);
+      const audioBuffer = await audioRes.arrayBuffer();
+      
+      const formData = new FormData();
+      formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg');
+      formData.append('model', 'whisper-1');
+      
+      const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + OPENAI_KEY },
+        body: formData
+      });
+      const whisperData = await whisperRes.json();
+      const transcribed = whisperData.text;
+      
+      if (!transcribed) {
+        await sendTelegram(chatId, 'Could not transcribe. Try again or send as text.');
+        return res.status(200).json({ ok: true });
+      }
+      
+      await sendTelegram(chatId, `_"${transcribed}"_\n\nProcessing...`);
+      
+      // Check if we're in /decide flow
+      const state = await getConvState(chatId);
+      if (state && state.flow_type === 'decide') {
+        await handleDecideFlow(chatId, transcribed, state);
+      } else {
+        await processUpdate(chatId, transcribed);
+      }
+      return res.status(200).json({ ok: true });
+    } catch(e) {
+      await sendTelegram(chatId, 'Voice error: ' + e.message);
+      return res.status(200).json({ ok: true });
+    }
+  }
+  
   const text = (message.text || '').split('@')[0].trim();
   
   try {
